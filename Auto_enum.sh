@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Improved HackTheBox Enumeration Script
+# Optimized HackTheBox Enumeration Script for Kali Linux
 
 # Check if target IP is provided
 if [ $# -eq 0 ]; then
@@ -10,13 +10,9 @@ fi
 
 TARGET_IP=$1
 OUTPUT_DIR="htb_enum_$(date +%Y%m%d_%H%M%S)"
+THREADS=8  # Adjusted based on your 2 CPU cores
 
 mkdir -p "$OUTPUT_DIR"
-
-# Function to check if a command is available
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
 
 # Function to run a command and save output
 run_and_save() {
@@ -32,35 +28,38 @@ run_and_save() {
 }
 
 # Nmap scan
-run_and_save "nmap -sC -sV -oN $OUTPUT_DIR/nmap_initial.txt $TARGET_IP" "nmap_initial.txt"
+run_and_save "nmap -sC -sV -oA $OUTPUT_DIR/nmap_initial $TARGET_IP" "nmap_initial.nmap"
 
 # Faster Nmap for all ports
-run_and_save "nmap -p- --min-rate=1000 -T4 $TARGET_IP -oN $OUTPUT_DIR/nmap_all_ports.txt" "nmap_all_ports.txt"
+run_and_save "nmap -p- --min-rate=1000 -T4 $TARGET_IP -oA $OUTPUT_DIR/nmap_all_ports" "nmap_all_ports.nmap"
 
 # Gobuster directory scan
-if command_exists gobuster; then
-    run_and_save "gobuster dir -u http://$TARGET_IP -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 50 -o $OUTPUT_DIR/gobuster_dir.txt" "gobuster_dir.txt"
-else
-    echo "Gobuster is not installed. Skipping directory enumeration."
-fi
+GOBUSTER_WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+run_and_save "gobuster dir -u http://$TARGET_IP -w $GOBUSTER_WORDLIST -t $THREADS -o $OUTPUT_DIR/gobuster_dir.txt" "gobuster_dir.txt"
 
 # Nikto scan
-if command_exists nikto; then
-    run_and_save "nikto -h http://$TARGET_IP -output $OUTPUT_DIR/nikto_scan.txt" "nikto_scan.txt"
-else
-    echo "Nikto is not installed. Skipping web server scan."
-fi
+run_and_save "nikto -h http://$TARGET_IP -output $OUTPUT_DIR/nikto_scan.txt" "nikto_scan.txt"
 
-# Ffuf vhost discovery (if web server is present)
-if command_exists ffuf; then
-    WORDLIST="/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
-    if [ ! -f "$WORDLIST" ]; then
-        echo "Wordlist not found. Using a smaller, common wordlist."
-        WORDLIST="/usr/share/wordlists/dirb/common.txt"
-    fi
-    run_and_save "ffuf -w $WORDLIST -u http://$TARGET_IP -H 'Host: FUZZ.$TARGET_IP' -fc 404 -o $OUTPUT_DIR/ffuf_vhost.txt" "ffuf_vhost.txt"
-else
-    echo "Ffuf is not installed. Skipping vhost discovery."
-fi
+# Ffuf vhost discovery
+FFUF_WORDLIST="/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+run_and_save "ffuf -w $FFUF_WORDLIST -u http://$TARGET_IP -H 'Host: FUZZ.$TARGET_IP' -fc 404 -o $OUTPUT_DIR/ffuf_vhost.json" "ffuf_vhost.json"
+
+# DNS enumeration with dnsrecon
+run_and_save "dnsrecon -d $TARGET_IP -t std,brt -D /usr/share/wordlists/dnsmap.txt" "dnsrecon_results.txt"
+
+# Wfuzz for API endpoint discovery
+WFUZZ_WORDLIST="/usr/share/wfuzz/wordlist/general/common.txt"
+run_and_save "wfuzz -c -z file,$WFUZZ_WORDLIST --hc 404 http://$TARGET_IP/FUZZ" "wfuzz_api_endpoints.txt"
+
+# Hydra SSH brute force (use with caution)
+HYDRA_WORDLIST="/usr/share/wordlists/rockyou.txt.gz"
+run_and_save "hydra -l root -P $HYDRA_WORDLIST $TARGET_IP ssh -t $THREADS" "hydra_ssh_brute.txt"
+
+# SQLMap basic scan (if a potential SQL injection point is found)
+echo "If you find a potential SQL injection point, run:"
+echo "sqlmap -u 'http://$TARGET_IP/vulnerable_page.php?id=1' --batch --random-agent"
+
+# Check for vulnerable services using nmap scripts
+run_and_save "nmap -sV -p- --script vuln $TARGET_IP" "nmap_vuln_scan.nmap"
 
 echo "Enumeration complete. Results are saved in the $OUTPUT_DIR directory."
