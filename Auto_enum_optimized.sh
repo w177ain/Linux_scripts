@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Improved HackTheBox Enumeration Script for Kali Linux
 
@@ -27,18 +28,36 @@ run_and_save() {
     echo
 }
 
+check_dependencies() {
+    for cmd in nmap gobuster nikto wfuzz enum4linux snmp-check whatweb sslscan searchsploit; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo "Required tool '$cmd' is not installed." >&2
+            exit 1
+        fi
+    done
+}
+
+check_dependencies
+
 # Nmap scan
 run_and_save "nmap -sC -sV -p- --min-rate=1000 -oA $OUTPUT_DIR/nmap_full $TARGET_IP" "nmap_full.nmap"
 
+# Extract open ports for later checks
+open_ports=$(grep "/tcp" "$OUTPUT_DIR/nmap_full.nmap" | grep open | awk -F"/" '{print $1}' | tr '\n' ',')
+
 # Vulnerability scan using nmap scripts
-run_and_save "nmap -sV --script vuln $TARGET_IP -oA $OUTPUT_DIR/nmap_vuln" "nmap_vuln.nmap"
+run_and_save "nmap -sV --script vuln -p ${open_ports%,} $TARGET_IP -oA $OUTPUT_DIR/nmap_vuln" "nmap_vuln.nmap"
 
 # Directory enumeration with gobuster (adjusted for 302 responses)
-GOBUSTER_WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
-run_and_save "gobuster dir -u http://$TARGET_IP -w $GOBUSTER_WORDLIST -t $THREADS -s '200,204,301,302,307,403,500' -o $OUTPUT_DIR/gobuster_dir.txt" "gobuster_dir.txt"
+if echo "$open_ports" | grep -Eq '(^|,)(80|8080|8000)(,|$)'; then
+    GOBUSTER_WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+    run_and_save "gobuster dir -u http://$TARGET_IP -w $GOBUSTER_WORDLIST -t $THREADS -s '200,204,301,302,307,403,500' -o $OUTPUT_DIR/gobuster_dir.txt" "gobuster_dir.txt"
+fi
 
 # Web vulnerability scanning with nikto
-run_and_save "nikto -h http://$TARGET_IP -output $OUTPUT_DIR/nikto_scan.txt" "nikto_scan.txt"
+if echo "$open_ports" | grep -Eq '(^|,)(80|8080|8000)(,|$)'; then
+    run_and_save "nikto -h http://$TARGET_IP -output $OUTPUT_DIR/nikto_scan.txt" "nikto_scan.txt"
+fi
 
 # Extract potential hostnames from nikto results
 POTENTIAL_HOSTNAME=$(grep "Root page / redirects to:" "$OUTPUT_DIR/nikto_scan.txt" | awk '{print $NF}' | sed 's/http:\/\///' | sed 's/\/.*//')
@@ -48,7 +67,7 @@ if [ ! -z "$POTENTIAL_HOSTNAME" ]; then
 fi
 
 # SSL/TLS analysis with sslscan (if HTTPS is available)
-if nmap -p 443 --open "$TARGET_IP" | grep -q "open"; then
+if echo "$open_ports" | grep -q "443"; then
     run_and_save "sslscan $TARGET_IP" "sslscan_results.txt"
 fi
 
@@ -57,12 +76,12 @@ WFUZZ_WORDLIST="/usr/share/wfuzz/wordlist/general/common.txt"
 run_and_save "wfuzz -c -z file,$WFUZZ_WORDLIST --hc 404 http://$TARGET_IP/FUZZ" "wfuzz_results.txt"
 
 # SMB enumeration with enum4linux (only if port 445 is open)
-if nmap -p 445 --open "$TARGET_IP" | grep -q "open"; then
+if echo "$open_ports" | grep -q "445"; then
     run_and_save "enum4linux $TARGET_IP" "enum4linux_results.txt"
 fi
 
 # SNMP enumeration with snmp-check (only if port 161 is open)
-if nmap -p 161 --open "$TARGET_IP" | grep -q "open"; then
+if echo "$open_ports" | grep -q "161"; then
     run_and_save "snmp-check $TARGET_IP" "snmp_check_results.txt"
 fi
 
@@ -75,7 +94,6 @@ if [ ! -z "$POTENTIAL_HOSTNAME" ]; then
 fi
 
 # Check for vulnerable services using searchsploit
-open_ports=$(grep "open" "$OUTPUT_DIR/nmap_full.nmap" | awk -F'/' '{print $1}' | tr '\n' ',')
 run_and_save "searchsploit --nmap $OUTPUT_DIR/nmap_full.xml" "searchsploit_results.txt"
 
 echo "Enumeration complete. Results are saved in the $OUTPUT_DIR directory."
